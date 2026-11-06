@@ -1,0 +1,21 @@
+{
+  "name": "GARMENT ARCHIVE — 衣服アーカイブ",
+  "short_name": "GARMENT ARCHIVE",
+  "description": "型番・商品名で洋服の情報を探して記録するアプリ",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f7f6f3",
+  "theme_color": "#f7f6f3",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
