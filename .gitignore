@@ -1,0 +1,14 @@
+# Keep secrets and personal garment records out of GitHub
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+node_modules/
+.vercel/
+.DS_Store
+*.log
+*backup*.json
+*backup*.zip
+*garment-data*.json
+*closet-data*.json
