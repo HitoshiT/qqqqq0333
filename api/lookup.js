@@ -108,8 +108,22 @@ module.exports = async function handler(req,res) {
     } finally {clearTimeout(timeout);}
     const data = await response.json().catch(()=>null);
     if (!response.ok) {
-      console.error('OpenAI error',response.status,data?.error?.message);
-      return res.status(502).json({error:'検索APIに接続できませんでした。利用枠・APIキー・モデル設定を確認してください。'});
+      const problem = data?.error || {};
+      const status = response.status;
+      const code = String(problem.code || problem.type || 'unknown').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0,60);
+      const param = String(problem.param || '').replace(/[^a-zA-Z0-9_.\[\]-]/g, '').slice(0,80);
+      const requestId = String(response.headers.get('x-request-id') || '').slice(0,100);
+      console.error('OpenAI request rejected', { status, code, param, requestId });
+      let label;
+      if (status === 401) label = 'OpenAI APIキーが無効、または認証できていません。Vercelに登録したOPENAI_API_KEYを確認してください。';
+      else if (status === 429 || code === 'insufficient_quota') label = 'OpenAI APIの利用枠または請求設定が原因です。OpenAI PlatformのBillingとUsageを確認してください（ChatGPTの契約とは別です）。';
+      else if (status === 403) label = 'OpenAI側のアクセス権限が不足しています。APIキーのプロジェクト・モデル利用権限をご確認ください。';
+      else if (status === 404 || code === 'model_not_found') label = '指定されたAIモデルが使用できません。モデル名とAPIプロジェクトの権限を確認してください。';
+      else if (status === 400) label = 'OpenAIへのリクエスト設定が受け付けられませんでした。';
+      else if (status >= 500) label = 'OpenAIのサーバーで一時的なエラーが発生しました。';
+      else label = 'OpenAIの検索サービスからエラーが返されました。';
+      const diagnosis = ['HTTP ' + status, code !== 'unknown' ? code : '', param ? '項目 ' + param : ''].filter(Boolean).join(' / ');
+      return res.status(502).json({error:label + '（' + diagnosis + '）', diagnostic:{status,code,param,requestId}});
     }
     const output = (data?.output || []).filter(x=>x.type==='message').flatMap(x=>x.content||[])
       .filter(x=>x.type==='output_text').map(x=>x.text).join('\n');
