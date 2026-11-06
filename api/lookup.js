@@ -30,29 +30,59 @@ function collectSources(response) {
 function collectImages(response) {
   const images = [];
   for (const o of response.output || []) {
-    const list = Array.isArray(o.results) ? o.results : Array.isArray(o.results?.results) ? o.results.results : [];
     if (o.type !== 'web_search_call') continue;
+    const list = Array.isArray(o.results) ? o.results : Array.isArray(o.results?.results) ? o.results.results : [];
     for (const x of list) {
       const r = x.image_result || x;
-      const url = validURL(r.image_url || (r.type === 'image_result' ? r.url : ''));
-      if (url) images.push({url, caption: short(r.caption || r.title, 220), sourceUrl: validURL(r.source_website_url || r.source_url)});
+      if (r.type !== 'image_result' && !r.image_url && !r.thumbnail_url) continue;
+      const url = validURL(r.image_url) || validURL(r.thumbnail_url);
+      if (!url) continue;
+      images.push({
+        url, thumbnailUrl: validURL(r.thumbnail_url),
+        caption: short(r.caption || r.title, 260),
+        sourceUrl: validURL(r.source_website_url || r.source_url)
+      });
     }
   }
-  return distinct(images).slice(0, 20);
+  return distinct(images).slice(0, 30);
 }
-function normalize(s) {return short(s, 600).normalize('NFKC').toLowerCase().replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]/g, '');}
+function normalize(s) {
+  return short(s, 600).normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff]/g, '');
+}
+function pageKey(value) {
+  try { const u = new URL(value); return u.hostname.toLowerCase() + u.pathname.replace(/\/+$/, ''); }
+  catch { return ''; }
+}
 function photosFor(c, images) {
   const model = normalize(c.modelNumber), brand = normalize(c.brand), name = normalize(c.name);
+  const candidatePages = new Set([
+    ...(Array.isArray(c.sources) ? c.sources : []).map(x => validURL(typeof x === 'string' ? x : x?.url)),
+    ...Object.values(c.evidence || {}).map(validURL)
+  ].filter(Boolean).map(pageKey).filter(Boolean));
+  const nameTerms = short(c.name, 250).normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().split(/[\s/()【】\-_:・,]+/g).map(normalize)
+    .filter(x => x.length >= 5 && !['women','mens','unisex','black','white','size','model','color','cotton','wool','shirt'].includes(x));
   return images.map(x => {
-    const text = normalize([x.caption, x.sourceUrl, x.url].join(' '));
-    let score = 0;
-    if (model.length >= 4 && text.includes(model)) score += 5;
-    if (brand.length >= 3 && text.includes(brand)) score += 2;
-    if (name.length >= 7 && text.includes(name.slice(0, 15))) score += 2;
-    return {...x, score};
-  }).filter(x => x.score >= (model.length >= 4 ? 5 : 4))
-    .sort((a,b) => b.score-a.score).slice(0, 6)
-    .map(({url,caption,sourceUrl}) => ({url, caption, sourceUrl}));
+    const hay = normalize([x.caption, x.sourceUrl, x.url].join(' '));
+    const fullTitle = name.length >= 9 && hay.includes(name);
+    const sameSourcePage = !!(x.sourceUrl && candidatePages.has(pageKey(x.sourceUrl)));
+    const exactModel = model.length >= 5 && hay.includes(model);
+    const brandMatch = brand.length >= 3 && hay.includes(brand);
+    const titleMatches = nameTerms.filter(t => hay.includes(t)).length;
+    // An image must have strong evidence: an exact SKU, the cited product page,
+    // or a brand plus at least two distinctive words of the product name.
+    let score = exactModel ? 12 : sameSourcePage ? 11 : 0;
+    if (fullTitle) score += 7;
+    if (brandMatch) score += 2;
+    if (titleMatches >= 2) score += 7;
+    const matching = exactModel || sameSourcePage || fullTitle ||
+      (brandMatch && titleMatches >= 2);
+    return {...x, score, matching};
+  }).filter(x => x.matching)
+    .sort((a,b) => b.score-a.score)
+    .slice(0, 8)
+    .map(({url,thumbnailUrl,caption,sourceUrl}) => ({url,thumbnailUrl,caption,sourceUrl}));
 }
 function cleanCandidate(c, sources, images) {
   const allowed = new Set(sources.map(x => x.url));
@@ -100,8 +130,8 @@ module.exports = async function handler(req,res) {
           tool_choice:'required',
           include:['web_search_call.results','web_search_call.action.sources'],
           input:[
-            {role:'system',content:'You are a careful clothing archivist. Use live web search for the EXACT model number. Return ONLY valid JSON (no Markdown): {"candidates":[{"brand":"","name":"","modelNumber":"","category":"","material":"","brandStory":"","color":"","confidence":"high","caveat":"","sources":[{"url":"","title":""}],"evidence":{"brand":"URL","name":"URL","modelNumber":"URL","material":"URL","brandStory":"URL"}}]}. Return at most 3 distinct real matching garments. Prefer brand official pages then reliable sellers. Do not invent model numbers, materials, photos, source URLs, or brand background. Omit unknown information. BrandStory must describe the brand, not the individual garment. User-owned size is unknowable: leave it blank. Use Japanese, except names. For no verified match, return {"candidates":[]}. Provide real searched source page URLs.'},
-            {role:'user',content:'服の型番・商品名を調べてください。\n入力: ' + query + '\nブランドの手がかり: ' + (brand || 'なし') + '\n別シーズン・類似品と混同しないでください。'}
+            {role:'system',content:'You are a careful clothing archivist. Use live web search for the EXACT model number and request image results of that exact garment, preferably from its verified product page. Product photographs matter as much as details. Do not confuse adjacent seasons, colors, or similarly named garments. Return ONLY valid JSON (no Markdown): {"candidates":[{"brand":"","name":"","modelNumber":"","category":"","material":"","brandStory":"","color":"","confidence":"high","caveat":"","sources":[{"url":"","title":""}],"evidence":{"brand":"URL","name":"URL","modelNumber":"URL","material":"URL","brandStory":"URL"}}]}. Return at most 3 distinct real matching garments. Prefer brand official pages then reliable sellers. Do not invent model numbers, materials, photos, source URLs, or brand background. Omit unknown information. BrandStory must describe the brand, not the individual garment. User-owned size is unknowable: leave it blank. Use Japanese, except names. For no verified match, return {"candidates":[]}. Provide real searched source page URLs.'},
+            {role:'user',content:'服の型番・商品名を調べてください。\n入力: ' + query + '\nブランドの手がかり: ' + (brand || 'なし') + '\n別シーズン・類似品と混同しないでください。該当商品の掲載画像もウェブ画像検索で探し、公式商品ページまたは信頼できる販売ページを優先してください。'}
           ]
         })
       });
@@ -132,7 +162,7 @@ module.exports = async function handler(req,res) {
     const candidates = (Array.isArray(parsed.candidates) ? parsed.candidates : [])
       .filter(c=>c && typeof c==='object' && (c.name||c.modelNumber))
       .slice(0,3).map(c=>cleanCandidate(c,sources,images));
-    return res.status(200).json({candidates});
+    return res.status(200).json({candidates, imageSearch:{found:images.length, matched:candidates.reduce((n,c)=>n+c.photoOptions.length,0)}});
   } catch (error) {
     console.error('Lookup error',error?.message);
     return res.status(502).json({error:error?.name==='AbortError' ? '検索時間が長すぎました。再度お試しください。' : '検索結果を解析できませんでした。検索語を変えて試してください。'});
